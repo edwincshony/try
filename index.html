@@ -3,377 +3,216 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Math Bubble Solver</title>
+    <title>Math Bubble Ranker</title>
     <style>
-        * {
+        body, html {
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            background: #000;
+            width: 100%;
+            height: 100%;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
-        #container {
-            position: fixed;
-            top: 0;
-            left: 0;
+        #app-container {
+            position: relative;
             width: 100vw;
             height: 100vh;
             display: flex;
-            align-items: center;
             justify-content: center;
+            align-items: center;
         }
 
-        #video {
+        video {
             position: absolute;
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1);
-            display: block;
         }
 
-        canvas {
-            position: absolute;
-            display: none;
-        }
-
-        #overlay {
+        canvas#overlay {
             position: absolute;
             top: 0;
             left: 0;
-            display: block;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
             z-index: 10;
-            transform: scaleX(-1);
         }
 
-        #error {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            background: rgba(255, 0, 0, 0.9);
-            color: white;
-            padding: 15px 20px;
-            border-radius: 8px;
-            font-size: 14px;
+        canvas#hidden-buffer {
             display: none;
-            z-index: 20;
+        }
+
+        .error-overlay {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 0, 0, 0.8);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            z-index: 100;
+            display: none;
         }
     </style>
 </head>
 <body>
-    <div id="container">
-        <video id="video" playsinline autoplay muted></video>
-        <canvas id="processing"></canvas>
-        <canvas id="overlay"></canvas>
-    </div>
-    <div id="error"></div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js"></script>
-    <script>
-        const config = {
-            bubbleMinRadius: 30,
-            bubbleMaxRadius: 150,
-            circularityThreshold: 0.6,
-            brightnessThreshold: 100,
-            hueRangeWhite: { min: 0, max: 360 },
-            saturationMax: 30,
-            valueMin: 180,
-            frameSkip: 2,
-            confidenceThreshold: 30
-        };
+<div id="app-container">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <canvas id="hidden-buffer"></canvas>
+    <div id="error-msg" class="error-overlay"></div>
+</div>
 
-        const state = {
-            video: null,
-            processingCanvas: null,
-            overlayCanvas: null,
-            overlayCtx: null,
-            bubbles: [],
-            results: [],
-            frameCount: 0,
-            isProcessing: false
-        };
+<script>
+    const video = document.getElementById('webcam');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
+    const buffer = document.getElementById('hidden-buffer');
+    const bctx = buffer.getContext('2d');
+    const errorMsg = document.getElementById('error-msg');
 
-        function showError(msg) {
-            const err = document.getElementById('error');
-            err.textContent = msg;
-            err.style.display = 'block';
-            setTimeout(() => {
-                err.style.display = 'none';
-            }, 5000);
-        }
+    const apiKey = ""; 
+    const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
-        async function initCamera() {
-            state.video = document.getElementById('video');
-            state.processingCanvas = document.getElementById('processing');
-            state.overlayCanvas = document.getElementById('overlay');
-            state.overlayCtx = state.overlayCanvas.getContext('2d');
+    let isProcessing = false;
 
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    },
-                    audio: false
-                });
-
-                state.video.srcObject = stream;
-
-                state.video.onloadedmetadata = () => {
-                    state.processingCanvas.width = state.video.videoWidth;
-                    state.processingCanvas.height = state.video.videoHeight;
-                    state.overlayCanvas.width = state.video.videoWidth;
-                    state.overlayCanvas.height = state.video.videoHeight;
-                    processFrame();
+    async function setupCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: 'environment',
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                },
+                audio: false
+            });
+            video.srcObject = stream;
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    resolve(video);
                 };
-            } catch (error) {
-                showError('Camera access denied or unavailable');
+            });
+        } catch (e) {
+            showError("Camera access denied or unavailable.");
+        }
+    }
+
+    function showError(text) {
+        errorMsg.textContent = text;
+        errorMsg.style.display = 'block';
+        setTimeout(() => { errorMsg.style.display = 'none'; }, 3000);
+    }
+
+    function resizeCanvas() {
+        overlay.width = window.innerWidth;
+        overlay.height = window.innerHeight;
+    }
+
+    async function processFrame() {
+        if (isProcessing) return;
+        isProcessing = true;
+
+        // Prepare buffer canvas for snapshot
+        buffer.width = video.videoWidth;
+        buffer.height = video.videoHeight;
+        bctx.drawImage(video, 0, 0, buffer.width, buffer.height);
+        
+        const base64Image = buffer.toDataURL('image/jpeg', 0.6).split(',')[1];
+
+        const payload = {
+            contents: [{
+                parts: [
+                    { text: "Detect exactly 3 math bubbles in this image. For each, find its center coordinates [x, y] as percentages of image width/height (0-100) and solve the math expression. Return ONLY a JSON array of 3 objects: [{\"x\": number, \"y\": number, \"val\": number}]. Do not explain." },
+                    { inlineData: { mimeType: "image/jpeg", data: base64Image } }
+                ]
+            }],
+            generationConfig: {
+                responseMimeType: "application/json"
             }
+        };
+
+        try {
+            const response = await fetchWithRetry(modelUrl, payload);
+            const data = await response.json();
+            const results = JSON.parse(data.candidates[0].content.parts[0].text);
+            
+            if (Array.isArray(results) && results.length === 3) {
+                renderRankings(results);
+            }
+        } catch (err) {
+            // Silently fail to maintain UI cleanliness
         }
 
-        function rgbToHsv(r, g, b) {
-            r /= 255;
-            g /= 255;
-            b /= 255;
+        isProcessing = false;
+    }
 
-            const max = Math.max(r, g, b);
-            const min = Math.min(r, g, b);
-            const diff = max - min;
-            let h = 0;
-            const s = max === 0 ? 0 : diff / max;
-            const v = max;
-
-            if (diff !== 0) {
-                if (max === r) h = ((g - b) / diff + (g < b ? 6 : 0)) / 6;
-                else if (max === g) h = ((b - r) / diff + 2) / 6;
-                else h = ((r - g) / diff + 4) / 6;
-            }
-
-            return {
-                h: Math.round(h * 360),
-                s: Math.round(s * 100),
-                v: Math.round(v * 100)
-            };
-        }
-
-        function detectBubbles(imageData) {
-            const data = imageData.data;
-            const width = imageData.width;
-            const height = imageData.height;
-            const bubbleCandidates = [];
-
-            const edgeMap = new Uint8Array(width * height);
-
-            for (let i = 0; i < width * height; i++) {
-                const idx = i * 4;
-                const r = data[idx];
-                const g = data[idx + 1];
-                const b = data[idx + 2];
-                const brightness = (r + g + b) / 3;
-
-                const hsv = rgbToHsv(r, g, b);
-                const isLight = hsv.v > config.valueMin && hsv.s < config.saturationMax;
-
-                if (isLight || brightness > config.brightnessThreshold) {
-                    edgeMap[i] = 255;
-                }
-            }
-
-            for (let y = config.bubbleMaxRadius; y < height - config.bubbleMaxRadius; y++) {
-                for (let x = config.bubbleMaxRadius; x < width - config.bubbleMaxRadius; x++) {
-                    const centerIdx = y * width + x;
-                    if (edgeMap[centerIdx] < 128) continue;
-
-                    let circularityScore = 0;
-                    let pixelsInCircle = 0;
-
-                    for (let radius = config.bubbleMinRadius; radius <= config.bubbleMaxRadius; radius++) {
-                        let edgePixels = 0;
-                        const circumference = Math.PI * 2 * radius;
-
-                        for (let angle = 0; angle < Math.PI * 2; angle += 0.1) {
-                            const px = Math.round(x + radius * Math.cos(angle));
-                            const py = Math.round(y + radius * Math.sin(angle));
-
-                            if (px >= 0 && px < width && py >= 0 && py < height) {
-                                const idx = py * width + px;
-                                if (edgeMap[idx] > 128) edgePixels++;
-                            }
-                        }
-
-                        const edgeRatio = edgePixels / (circumference / 0.1);
-                        if (edgeRatio > config.circularityThreshold) {
-                            circularityScore = Math.max(circularityScore, edgeRatio);
-                            pixelsInCircle = radius;
-                        }
-                    }
-
-                    if (circularityScore > config.circularityThreshold && pixelsInCircle > config.bubbleMinRadius) {
-                        const existing = bubbleCandidates.find(
-                            b => Math.hypot(b.x - x, b.y - y) < pixelsInCircle
-                        );
-
-                        if (!existing) {
-                            bubbleCandidates.push({
-                                x: x,
-                                y: y,
-                                radius: pixelsInCircle,
-                                score: circularityScore
-                            });
-                        }
-                    }
-                }
-            }
-
-            bubbleCandidates.sort((a, b) => b.score - a.score);
-
-            const finalBubbles = [];
-            for (const candidate of bubbleCandidates) {
-                const overlapping = finalBubbles.some(
-                    b => Math.hypot(b.x - candidate.x, b.y - candidate.y) < (b.radius + candidate.radius) / 2
-                );
-                if (!overlapping) {
-                    finalBubbles.push(candidate);
-                    if (finalBubbles.length === 3) break;
-                }
-            }
-
-            return finalBubbles;
-        }
-
-        function extractBubbleRegion(canvas, bubble) {
-            const ctx = canvas.getContext('2d');
-            const padding = 10;
-            const x = Math.max(0, bubble.x - bubble.radius - padding);
-            const y = Math.max(0, bubble.y - bubble.radius - padding);
-            const w = Math.min(canvas.width - x, bubble.radius * 2 + padding * 2);
-            const h = Math.min(canvas.height - y, bubble.radius * 2 + padding * 2);
-
-            const imageData = ctx.getImageData(x, y, w, h);
-            const canvas2 = document.createElement('canvas');
-            canvas2.width = w;
-            canvas2.height = h;
-            const ctx2 = canvas2.getContext('2d');
-            ctx2.putImageData(imageData, 0, 0);
-
-            return canvas2.toDataURL('image/png');
-        }
-
-        async function recognizeExpression(imageData) {
+    async function fetchWithRetry(url, payload, retries = 5) {
+        let delay = 1000;
+        for (let i = 0; i < retries; i++) {
             try {
-                const result = await Tesseract.recognize(imageData, 'eng', {
-                    logger: () => {}
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
                 });
-
-                let text = result.data.text
-                    .replace(/\s+/g, '')
-                    .replace(/O/g, '0')
-                    .replace(/l/g, '1')
-                    .replace(/S/g, '5')
-                    .replace(/Z/g, '2');
-
-                return text || '';
-            } catch (error) {
-                return '';
-            }
+                if (res.ok) return res;
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, delay));
+            delay *= 2;
         }
+        throw new Error("API Max Retries");
+    }
 
-        function evaluateExpression(expr) {
-            try {
-                expr = expr.replace(/[^\d+\-*/.()]/g, '');
-                if (!expr || expr.length === 0) return null;
+    function renderRankings(bubbles) {
+        // Sort by value (smallest to largest)
+        const sorted = [...bubbles].sort((a, b) => a.val - b.val);
+        
+        // Assign rank: index + 1
+        const ranked = bubbles.map(b => {
+            const rank = sorted.findIndex(s => s.val === b.val) + 1;
+            return { ...b, rank };
+        });
 
-                const result = Function('"use strict"; return (' + expr + ')')();
-                if (typeof result === 'number' && isFinite(result)) {
-                    return result;
-                }
-                return null;
-            } catch (error) {
-                return null;
-            }
-        }
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-        function drawOverlay() {
-            const ctx = state.overlayCtx;
-            ctx.clearRect(0, 0, state.overlayCanvas.width, state.overlayCanvas.height);
+        ranked.forEach(b => {
+            const screenX = (b.x / 100) * overlay.width;
+            const screenY = (b.y / 100) * overlay.height;
 
-            if (!state.results || state.results.length === 0) return;
+            // Draw Rank Circle
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, 40, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.fill();
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 3;
+            ctx.stroke();
 
-            for (const result of state.results) {
-                const x = result.bubble.x;
-                const y = result.bubble.y;
-                const radius = result.bubble.radius;
+            // Draw Number
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 48px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(b.rank, screenX, screenY);
+        });
+    }
 
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                ctx.beginPath();
-                ctx.arc(x, y, radius + 8, 0, Math.PI * 2);
-                ctx.fill();
+    window.addEventListener('resize', resizeCanvas);
 
-                ctx.fillStyle = '#00FF00';
-                ctx.font = 'bold ' + Math.round(radius * 0.8) + 'px Arial';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(result.rank, x, y);
-            }
-        }
+    window.onload = async () => {
+        resizeCanvas();
+        await setupCamera();
+        
+        // Start high-frequency loop
+        setInterval(processFrame, 500); 
+    };
+</script>
 
-        async function processFrame() {
-            state.frameCount++;
-
-            if (state.frameCount % config.frameSkip === 0 && !state.isProcessing) {
-                state.isProcessing = true;
-
-                try {
-                    const processingCtx = state.processingCanvas.getContext('2d');
-                    processingCtx.drawImage(state.video, 0, 0, state.processingCanvas.width, state.processingCanvas.height);
-
-                    const imageData = processingCtx.getImageData(0, 0, state.processingCanvas.width, state.processingCanvas.height);
-                    state.bubbles = detectBubbles(imageData);
-
-                    if (state.bubbles.length === 3) {
-                        const expressions = [];
-
-                        for (const bubble of state.bubbles) {
-                            const imageDataUrl = extractBubbleRegion(state.processingCanvas, bubble);
-                            const expr = await recognizeExpression(imageDataUrl);
-                            const value = evaluateExpression(expr);
-                            expressions.push({ bubble, expr, value });
-                        }
-
-                        expressions.sort((a, b) => {
-                            if (a.value === null) return 1;
-                            if (b.value === null) return -1;
-                            return a.value - b.value;
-                        });
-
-                        state.results = expressions.map((item, idx) => ({
-                            bubble: item.bubble,
-                            expr: item.expr,
-                            value: item.value,
-                            rank: idx + 1
-                        }));
-
-                        drawOverlay();
-                    } else {
-                        state.overlayCtx.clearRect(0, 0, state.overlayCanvas.width, state.overlayCanvas.height);
-                    }
-                } catch (error) {
-                    state.overlayCtx.clearRect(0, 0, state.overlayCanvas.width, state.overlayCanvas.height);
-                }
-
-                state.isProcessing = false;
-            }
-
-            requestAnimationFrame(processFrame);
-        }
-
-        initCamera();
-    </script>
 </body>
-</html
+</html>
