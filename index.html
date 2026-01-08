@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bubble Solver Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            overscroll-behavior: none;
+            background-color: #020617;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .scan-line {
+            height: 3px;
+            background: linear-gradient(to right, transparent, #60a5fa, transparent);
+            position: absolute;
+            width: 100%;
+            top: 0;
+            animation: scan 2.5s linear infinite;
+            z-index: 10;
+        }
+        @keyframes scan {
+            0% { top: 0%; }
+            100% { top: 100%; }
+        }
+        #video-container {
+            position: relative;
+            width: 100%;
+            flex-grow: 1;
+            overflow: hidden;
+            background: #000;
+        }
+        #canvas-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20;
+            pointer-events: none;
+        }
+        #canvas-hidden { display: none; }
+    </style>
+</head>
+<body class="text-white select-none">
+
+    <!-- Top Status Bar -->
+    <div class="w-full px-6 py-4 flex justify-between items-center bg-slate-900/80 backdrop-blur-md z-40 border-b border-slate-800">
+        <div>
+            <h1 class="text-lg font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">Bubble Solver</h1>
+            <p id="status-label" class="text-[10px] uppercase tracking-widest text-slate-400 font-semibold">Initializing...</p>
+        </div>
+        <div id="indicator" class="w-3 h-3 rounded-full bg-slate-600 shadow-[0_0_10px_rgba(0,0,0,0.5)]"></div>
+    </div>
+
+    <!-- Main Viewport -->
+    <div id="video-container">
+        <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
+        <canvas id="canvas-overlay"></canvas>
+        <div class="scan-line"></div>
+        
+        <!-- HUD Overlay -->
+        <div id="hud" class="absolute bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-none opacity-0 transition-opacity z-30">
+            <div class="bg-black/60 backdrop-blur-md border border-white/20 rounded-full px-6 py-2 text-xs font-mono tracking-widest">
+                SOLVING...
+            </div>
+        </div>
+    </div>
+
+    <canvas id="canvas-hidden"></canvas>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvasHidden = document.getElementById('canvas-hidden');
+        const canvasOverlay = document.getElementById('canvas-overlay');
+        const ctxOverlay = canvasOverlay.getContext('2d');
+        const statusLabel = document.getElementById('status-label');
+        const indicator = document.getElementById('indicator');
+        const hud = document.getElementById('hud');
+        
+        const apiKey = ""; 
+        let isProcessing = false;
+
+        async function initApp() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: "environment",
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }, 
+                    audio: false 
+                });
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    updateOverlaySize();
+                    statusLabel.innerText = "LIVE SCANNING";
+                    indicator.className = "w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_10px_#3b82f6]";
+                    // Start automatic loop
+                    setInterval(captureAndSolve, 2500); 
+                };
+            } catch (err) {
+                statusLabel.innerText = "CAMERA ERROR";
+                indicator.className = "w-3 h-3 rounded-full bg-red-500 shadow-[0_0_10px_#ef4444]";
+            }
+        }
+
+        function updateOverlaySize() {
+            canvasOverlay.width = video.clientWidth;
+            canvasOverlay.height = video.clientHeight;
+        }
+
+        window.addEventListener('resize', updateOverlaySize);
+
+        function drawMarkers(bubbles) {
+            ctxOverlay.clearRect(0, 0, canvasOverlay.width, canvasOverlay.height);
+            
+            bubbles.forEach((bubble, index) => {
+                const x = (bubble.x / 1000) * canvasOverlay.width;
+                const y = (bubble.y / 1000) * canvasOverlay.height;
+                const order = index + 1;
+
+                // Color based on order: 1=Green, 2=Yellow, 3=Red
+                const colors = ["#4ade80", "#fbbf24", "#f87171"];
+                const color = colors[index] || "#3b82f6";
+
+                ctxOverlay.shadowBlur = 25;
+                ctxOverlay.shadowColor = color;
+                
+                // Ring
+                ctxOverlay.beginPath();
+                ctxOverlay.arc(x, y, 40, 0, Math.PI * 2);
+                ctxOverlay.fillStyle = "rgba(0,0,0,0.7)";
+                ctxOverlay.fill();
+                ctxOverlay.strokeStyle = color;
+                ctxOverlay.lineWidth = 5;
+                ctxOverlay.stroke();
+
+                // Number
+                ctxOverlay.shadowBlur = 0;
+                ctxOverlay.fillStyle = "white";
+                ctxOverlay.font = "bold 38px system-ui";
+                ctxOverlay.textAlign = "center";
+                ctxOverlay.textBaseline = "middle";
+                ctxOverlay.fillText(order.toString(), x, y);
+            });
+        }
+
+        async function captureAndSolve() {
+            if (isProcessing) return;
+            isProcessing = true;
+
+            hud.style.opacity = "1";
+
+            canvasHidden.width = video.videoWidth;
+            canvasHidden.height = video.videoHeight;
+            const ctx = canvasHidden.getContext('2d');
+            ctx.drawImage(video, 0, 0);
+            const base64Data = canvasHidden.toDataURL('image/jpeg', 0.7).split(',')[1];
+
+            const prompt = `
+                Analyze image. Identify 3 bubbles containing math. Calculate values.
+                Coordinates: normalized 0-1000.
+                Sort: Smallest to largest value.
+                Return JSON only: {"bubbles": [{"x": 200, "y": 300}, {"x": 500, "y": 100}, {"x": 800, "y": 400}]}
+            `;
+
+            try {
+                const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64Data } }] }],
+                        generationConfig: { responseMimeType: "application/json" }
+                    })
+                });
+
+                const data = await response.json();
+                const result = JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text);
+                
+                if (result.bubbles && result.bubbles.length > 0) {
+                    drawMarkers(result.bubbles);
+                    indicator.className = "w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]";
+                }
+            } catch (err) {
+                console.error("Loop error:", err);
+            } finally {
+                isProcessing = false;
+                hud.style.opacity = "0";
+            }
+        }
+
+        async function fetchWithRetry(url, options, retries = 2) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.ok) return response;
+                } catch (err) {
+                    if (i === retries - 1) throw err;
+                }
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+
+        window.onload = initApp;
+    </script>
+</body>
+</html>
