@@ -3,219 +3,377 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Instant Math Bubble Ranker</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Math Bubble Solver</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: system-ui, sans-serif; }
-        #video-container { position: relative; width: 100vw; height: 100vh; }
-        video { width: 100%; height: 100%; object-fit: cover; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-        .ui-overlay {
-            position: absolute;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 10;
-            text-align: center;
-            width: 90%;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-        .status-pill {
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(8px);
-            color: white;
-            padding: 8px 16px;
-            border-radius: 999px;
-            font-size: 14px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            display: inline-block;
+
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         }
-        .error-toast {
+
+        #container {
             position: fixed;
-            bottom: 40px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #ef4444;
-            color: white;
-            padding: 12px 24px;
-            border-radius: 12px;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            display: block;
+        }
+
+        canvas {
+            position: absolute;
             display: none;
-            z-index: 100;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: block;
+            z-index: 10;
+            transform: scaleX(-1);
+        }
+
+        #error {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 0, 0, 0.9);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            display: none;
+            z-index: 20;
         }
     </style>
 </head>
 <body>
-
-<div id="video-container">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
-    
-    <div class="ui-overlay">
-        <div id="status" class="status-pill">Initializing Camera...</div>
+    <div id="container">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="processing"></canvas>
+        <canvas id="overlay"></canvas>
     </div>
+    <div id="error"></div>
 
-    <div id="error-toast" class="error-toast"></div>
-</div>
-
-<script>
-    const apiKey = ""; // Environment handles this
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('overlay');
-    const ctx = canvas.getContext('2d');
-    const statusEl = document.getElementById('status');
-    const errorToast = document.getElementById('error-toast');
-
-    let isProcessing = false;
-
-    // --- Core Logic ---
-
-    async function setupCamera() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "environment", focusMode: "continuous" }
-            });
-            video.srcObject = stream;
-            return new Promise((resolve) => {
-                video.onloadedmetadata = () => {
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    resolve();
-                };
-            });
-        } catch (err) {
-            showError("Camera access denied. Please allow camera permissions.");
-        }
-    }
-
-    function showError(msg) {
-        errorToast.textContent = msg;
-        errorToast.style.display = 'block';
-        setTimeout(() => { errorToast.style.display = 'none'; }, 5000);
-    }
-
-    async function processFrame() {
-        if (isProcessing) return;
-        isProcessing = true;
-        statusEl.textContent = "Scanning expressions...";
-
-        // Capture current frame
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = video.videoWidth;
-        tempCanvas.height = video.videoHeight;
-        const tempCtx = tempCanvas.getContext('2d');
-        tempCtx.drawImage(video, 0, 0);
-        const base64Image = tempCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-
-        try {
-            const result = await callGeminiAPI(base64Image);
-            if (result && result.bubbles) {
-                drawOverlays(result.bubbles);
-                statusEl.textContent = "Ready";
-            } else {
-                statusEl.textContent = "No bubbles found";
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-            }
-        } catch (err) {
-            console.error(err);
-        } finally {
-            isProcessing = false;
-            // Delay for the next scan to save battery/API quota, but keep it fast
-            setTimeout(processFrame, 400); 
-        }
-    }
-
-    async function callGeminiAPI(base64Data) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-        
-        const prompt = `Identify exactly 3 math bubbles in this image. Return a JSON object with a 'bubbles' array. Each bubble needs 'x' and 'y' (normalized 0-1000 coordinates for center), 'expression', and its 'result'. The app will order them 1-3 based on smallest result to largest.
-        Example format: {"bubbles": [{"x": 200, "y": 300, "expression": "5+5", "result": 10}, ...]}`;
-
-        const payload = {
-            contents: [{
-                parts: [
-                    { text: prompt },
-                    { inlineData: { mimeType: "image/jpeg", data: base64Data } }
-                ]
-            }],
-            generationConfig: {
-                responseMimeType: "application/json"
-            }
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js"></script>
+    <script>
+        const config = {
+            bubbleMinRadius: 30,
+            bubbleMaxRadius: 150,
+            circularityThreshold: 0.6,
+            brightnessThreshold: 100,
+            hueRangeWhite: { min: 0, max: 360 },
+            saturationMax: 30,
+            valueMin: 180,
+            frameSkip: 2,
+            confidenceThreshold: 30
         };
 
-        let retries = 5;
-        let delay = 1000;
+        const state = {
+            video: null,
+            processingCanvas: null,
+            overlayCanvas: null,
+            overlayCtx: null,
+            bubbles: [],
+            results: [],
+            frameCount: 0,
+            isProcessing: false
+        };
 
-        while (retries > 0) {
+        function showError(msg) {
+            const err = document.getElementById('error');
+            err.textContent = msg;
+            err.style.display = 'block';
+            setTimeout(() => {
+                err.style.display = 'none';
+            }, 5000);
+        }
+
+        async function initCamera() {
+            state.video = document.getElementById('video');
+            state.processingCanvas = document.getElementById('processing');
+            state.overlayCanvas = document.getElementById('overlay');
+            state.overlayCtx = state.overlayCanvas.getContext('2d');
+
             try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
                 });
-                
-                if (!response.ok) throw new Error('API Error');
-                
-                const data = await response.json();
-                return JSON.parse(data.candidates[0].content.parts[0].text);
-            } catch (err) {
-                retries--;
-                if (retries === 0) throw err;
-                await new Promise(r => setTimeout(r, delay));
-                delay *= 2;
+
+                state.video.srcObject = stream;
+
+                state.video.onloadedmetadata = () => {
+                    state.processingCanvas.width = state.video.videoWidth;
+                    state.processingCanvas.height = state.video.videoHeight;
+                    state.overlayCanvas.width = state.video.videoWidth;
+                    state.overlayCanvas.height = state.video.videoHeight;
+                    processFrame();
+                };
+            } catch (error) {
+                showError('Camera access denied or unavailable');
             }
         }
-    }
 
-    function drawOverlays(bubbles) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // Sort bubbles by result (Smallest -> Largest)
-        const sorted = [...bubbles].sort((a, b) => a.result - b.result);
+        function rgbToHsv(r, g, b) {
+            r /= 255;
+            g /= 255;
+            b /= 255;
 
-        sorted.forEach((bubble, index) => {
-            const rank = index + 1;
-            const x = (bubble.x / 1000) * canvas.width;
-            const y = (bubble.y / 1000) * canvas.height;
+            const max = Math.max(r, g, b);
+            const min = Math.min(r, g, b);
+            const diff = max - min;
+            let h = 0;
+            const s = max === 0 ? 0 : diff / max;
+            const v = max;
 
-            // Draw Rank Circle
-            ctx.beginPath();
-            ctx.arc(x, y, 40, 0, Math.PI * 2);
-            ctx.fillStyle = getRankColor(rank);
-            ctx.fill();
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 4;
-            ctx.stroke();
+            if (diff !== 0) {
+                if (max === r) h = ((g - b) / diff + (g < b ? 6 : 0)) / 6;
+                else if (max === g) h = ((b - r) / diff + 2) / 6;
+                else h = ((r - g) / diff + 4) / 6;
+            }
 
-            // Draw Number
-            ctx.fillStyle = 'white';
-            ctx.font = 'bold 48px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(rank, x, y);
+            return {
+                h: Math.round(h * 360),
+                s: Math.round(s * 100),
+                v: Math.round(v * 100)
+            };
+        }
 
-            // Draw Result small above
-            ctx.font = 'bold 20px sans-serif';
-            ctx.fillText(`(${bubble.result})`, x, y + 60);
-        });
-    }
+        function detectBubbles(imageData) {
+            const data = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+            const bubbleCandidates = [];
 
-    function getRankColor(rank) {
-        if (rank === 1) return '#22c55e'; // Green (Smallest)
-        if (rank === 2) return '#eab308'; // Yellow (Medium)
-        return '#ef4444'; // Red (Largest)
-    }
+            const edgeMap = new Uint8Array(width * height);
 
-    // Initialize
-    window.onload = async () => {
-        await setupCamera();
-        processFrame();
-    };
+            for (let i = 0; i < width * height; i++) {
+                const idx = i * 4;
+                const r = data[idx];
+                const g = data[idx + 1];
+                const b = data[idx + 2];
+                const brightness = (r + g + b) / 3;
 
-    // Handle screen resizing
-    window.addEventListener('resize', () => {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-    });
+                const hsv = rgbToHsv(r, g, b);
+                const isLight = hsv.v > config.valueMin && hsv.s < config.saturationMax;
 
-</script>
+                if (isLight || brightness > config.brightnessThreshold) {
+                    edgeMap[i] = 255;
+                }
+            }
+
+            for (let y = config.bubbleMaxRadius; y < height - config.bubbleMaxRadius; y++) {
+                for (let x = config.bubbleMaxRadius; x < width - config.bubbleMaxRadius; x++) {
+                    const centerIdx = y * width + x;
+                    if (edgeMap[centerIdx] < 128) continue;
+
+                    let circularityScore = 0;
+                    let pixelsInCircle = 0;
+
+                    for (let radius = config.bubbleMinRadius; radius <= config.bubbleMaxRadius; radius++) {
+                        let edgePixels = 0;
+                        const circumference = Math.PI * 2 * radius;
+
+                        for (let angle = 0; angle < Math.PI * 2; angle += 0.1) {
+                            const px = Math.round(x + radius * Math.cos(angle));
+                            const py = Math.round(y + radius * Math.sin(angle));
+
+                            if (px >= 0 && px < width && py >= 0 && py < height) {
+                                const idx = py * width + px;
+                                if (edgeMap[idx] > 128) edgePixels++;
+                            }
+                        }
+
+                        const edgeRatio = edgePixels / (circumference / 0.1);
+                        if (edgeRatio > config.circularityThreshold) {
+                            circularityScore = Math.max(circularityScore, edgeRatio);
+                            pixelsInCircle = radius;
+                        }
+                    }
+
+                    if (circularityScore > config.circularityThreshold && pixelsInCircle > config.bubbleMinRadius) {
+                        const existing = bubbleCandidates.find(
+                            b => Math.hypot(b.x - x, b.y - y) < pixelsInCircle
+                        );
+
+                        if (!existing) {
+                            bubbleCandidates.push({
+                                x: x,
+                                y: y,
+                                radius: pixelsInCircle,
+                                score: circularityScore
+                            });
+                        }
+                    }
+                }
+            }
+
+            bubbleCandidates.sort((a, b) => b.score - a.score);
+
+            const finalBubbles = [];
+            for (const candidate of bubbleCandidates) {
+                const overlapping = finalBubbles.some(
+                    b => Math.hypot(b.x - candidate.x, b.y - candidate.y) < (b.radius + candidate.radius) / 2
+                );
+                if (!overlapping) {
+                    finalBubbles.push(candidate);
+                    if (finalBubbles.length === 3) break;
+                }
+            }
+
+            return finalBubbles;
+        }
+
+        function extractBubbleRegion(canvas, bubble) {
+            const ctx = canvas.getContext('2d');
+            const padding = 10;
+            const x = Math.max(0, bubble.x - bubble.radius - padding);
+            const y = Math.max(0, bubble.y - bubble.radius - padding);
+            const w = Math.min(canvas.width - x, bubble.radius * 2 + padding * 2);
+            const h = Math.min(canvas.height - y, bubble.radius * 2 + padding * 2);
+
+            const imageData = ctx.getImageData(x, y, w, h);
+            const canvas2 = document.createElement('canvas');
+            canvas2.width = w;
+            canvas2.height = h;
+            const ctx2 = canvas2.getContext('2d');
+            ctx2.putImageData(imageData, 0, 0);
+
+            return canvas2.toDataURL('image/png');
+        }
+
+        async function recognizeExpression(imageData) {
+            try {
+                const result = await Tesseract.recognize(imageData, 'eng', {
+                    logger: () => {}
+                });
+
+                let text = result.data.text
+                    .replace(/\s+/g, '')
+                    .replace(/O/g, '0')
+                    .replace(/l/g, '1')
+                    .replace(/S/g, '5')
+                    .replace(/Z/g, '2');
+
+                return text || '';
+            } catch (error) {
+                return '';
+            }
+        }
+
+        function evaluateExpression(expr) {
+            try {
+                expr = expr.replace(/[^\d+\-*/.()]/g, '');
+                if (!expr || expr.length === 0) return null;
+
+                const result = Function('"use strict"; return (' + expr + ')')();
+                if (typeof result === 'number' && isFinite(result)) {
+                    return result;
+                }
+                return null;
+            } catch (error) {
+                return null;
+            }
+        }
+
+        function drawOverlay() {
+            const ctx = state.overlayCtx;
+            ctx.clearRect(0, 0, state.overlayCanvas.width, state.overlayCanvas.height);
+
+            if (!state.results || state.results.length === 0) return;
+
+            for (const result of state.results) {
+                const x = result.bubble.x;
+                const y = result.bubble.y;
+                const radius = result.bubble.radius;
+
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.beginPath();
+                ctx.arc(x, y, radius + 8, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = '#00FF00';
+                ctx.font = 'bold ' + Math.round(radius * 0.8) + 'px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(result.rank, x, y);
+            }
+        }
+
+        async function processFrame() {
+            state.frameCount++;
+
+            if (state.frameCount % config.frameSkip === 0 && !state.isProcessing) {
+                state.isProcessing = true;
+
+                try {
+                    const processingCtx = state.processingCanvas.getContext('2d');
+                    processingCtx.drawImage(state.video, 0, 0, state.processingCanvas.width, state.processingCanvas.height);
+
+                    const imageData = processingCtx.getImageData(0, 0, state.processingCanvas.width, state.processingCanvas.height);
+                    state.bubbles = detectBubbles(imageData);
+
+                    if (state.bubbles.length === 3) {
+                        const expressions = [];
+
+                        for (const bubble of state.bubbles) {
+                            const imageDataUrl = extractBubbleRegion(state.processingCanvas, bubble);
+                            const expr = await recognizeExpression(imageDataUrl);
+                            const value = evaluateExpression(expr);
+                            expressions.push({ bubble, expr, value });
+                        }
+
+                        expressions.sort((a, b) => {
+                            if (a.value === null) return 1;
+                            if (b.value === null) return -1;
+                            return a.value - b.value;
+                        });
+
+                        state.results = expressions.map((item, idx) => ({
+                            bubble: item.bubble,
+                            expr: item.expr,
+                            value: item.value,
+                            rank: idx + 1
+                        }));
+
+                        drawOverlay();
+                    } else {
+                        state.overlayCtx.clearRect(0, 0, state.overlayCanvas.width, state.overlayCanvas.height);
+                    }
+                } catch (error) {
+                    state.overlayCtx.clearRect(0, 0, state.overlayCanvas.width, state.overlayCanvas.height);
+                }
+
+                state.isProcessing = false;
+            }
+
+            requestAnimationFrame(processFrame);
+        }
+
+        initCamera();
+    </script>
 </body>
 </html>
